@@ -53,8 +53,11 @@ object SparkDota {
   }
 
   def getAWSCred(): List[String] = {
-    val filename = "src/main/resources/sparkdota/rootkey.txt"
-
-    Source.fromFile(filename).getLines.toList
+    try {
+      val filename = "src/main/resources/sparkdota/rootkey.txt"
+      Source.fromFile(filename).getLines.toList
+    } catch {
+      case e => println("Path to the rootkey is not correct")
+    }
   }
 }
