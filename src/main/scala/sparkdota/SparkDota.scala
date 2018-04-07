@@ -13,8 +13,8 @@ import org.apache.spark.sql.functions._
 
 case class Player(
     account_id: Long,
-    player_slot: Long,
     hero_id: Long,
+    player_slot: Long,
     kills: Long,
     deaths: Long,
     assists: Long,
@@ -31,8 +31,8 @@ case class Match(
     match_id: Long,
     match_seq_num: Long,
     duration: Long,
-    players: Seq[Player],
-    radiant_win: Boolean
+    radiant_win: Boolean,
+    players: Seq[Player]
 )
 
 object SparkDota {
@@ -78,6 +78,7 @@ object SparkDota {
         $"radiant_win",
         // parsing players data
         $"players.account_id".as("account_id"),
+        $"players.hero_id".as("hero_id"),
         $"players.player_slot".as("player_slot"),
         $"players.kills".as("kills"),
         $"players.deaths".as("deaths"),
@@ -92,40 +93,61 @@ object SparkDota {
       .where($"human_players" === 10)
       .where($"game_mode".isin("1", "2", "22"))
       .where(!array_contains($"leaver_status", 1))
+      .map((r: Row) => Match(
+        r.getAs[Long](0),
+        r.getAs[Long](1),
+        r.getAs[Long](2),
+        r.getAs[Long](3),
+        r.getAs[Boolean](4),
+        convertToPlayerList(
+          r.getAs[Seq[Long]](5),
+          r.getAs[Seq[Long]](6),
+          r.getAs[Seq[Long]](7),
+          r.getAs[Seq[Long]](8),
+          r.getAs[Seq[Long]](9),
+          r.getAs[Seq[Long]](10),
+          r.getAs[Seq[Long]](11),
+          r.getAs[Seq[Long]](12),
+          r.getAs[Seq[Long]](13),
+          r.getAs[Seq[Long]](14),
+          r.getAs[Seq[Long]](15),
+          r.getAs[Seq[Long]](16)
+        )
+      ))
 
     firstRound.printSchema()
     firstRound.show();
+  }
 
-    // val secondRound = firstRound
-    //   .map(
-    //     mat =>
-    //       Match(
-    //         mat.getLong(0), // game_mode
-    //         mat.getLong(1), // match_id
-    //         mat.getLong(2), // match_seq_num
-    //         mat.getLong(3), // duration
-    //         mat
-    //           .getAs[Seq[Row]](5)
-    //           .map(p =>
-    //             Player(
-    //               p.getLong(2), // account_id
-    //               p.getLong(41), // player_slot
-    //               p.getLong(19), // hero_id,
-    //               p.getLong(29), // kills
-    //               p.getLong(9), // deaths
-    //               p.getLong(4), // assists,
-    //               p.getLong(33) == 1, // leaver_status
-    //               p.getLong(32), // last_hits
-    //               p.getLong(12), // gold_per_min
-    //               p.getLong(49), // xp_per_min
-    //               p.getLong(16), // hero_damage
-    //               p.getLong(48) // tower_damange
-    //           )),
-    //         mat.getBoolean(4) // radiant_win
-    //     ))
-
-    // secondRound.printSchema();
-    // secondRound.show();
+  def convertToPlayerList(
+    accountIds: Seq[Long],
+    heroIds: Seq[Long],
+    playerSlots: Seq[Long],
+    kills: Seq[Long],
+    deaths: Seq[Long],
+    assists: Seq[Long],
+    leaverStats: Seq[Long],
+    lastHits: Seq[Long],
+    gpm: Seq[Long],
+    xpm: Seq[Long],
+    dmgs: Seq[Long],
+    towerDmg: Seq[Long]
+  ): Seq[Player] = {
+    for {i <- 0 to 9}
+      yield Player(
+        accountIds(i), 
+        heroIds(i), 
+        playerSlots(i), 
+        kills(i), 
+        deaths(i),
+        assists(i),
+        leaverStats(i) == 1,
+        lastHits(i),
+        gpm(i),
+        xpm(i),
+        dmgs(i),
+        towerDmg(i)
+      )
   }
 
   def getAWSCred(): List[String] = {
