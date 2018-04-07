@@ -11,6 +11,10 @@ import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
 
+import play.api.libs.json._
+import play.api.libs.json._
+import play.api.libs.functional.syntax._
+
 case class Player(
     account_id: Long,
     hero_id: Long,
@@ -47,17 +51,49 @@ object SparkDota {
 
 // implicit conversions
   import spark.implicits._
+  
   val sc: SparkContext = spark.sparkContext
   val hc = sc.hadoopConfiguration
-  val awsCred = getAWSCred();
+  val awsCred = getAWSCred()
+  val heroPath = "src/main/resources/sparkdota/hero.json"
+  val heroDataSource = Source.fromFile(heroPath);
 
   hc.set("fs.s3a.impl", "org.apache.hadoop.fs.s3native.NativeS3FileSystem")
   hc.set("fs.s3a.awsAccessKeyId", awsCred(0))
   hc.set("fs.s3a.awsSecretAccessKey", awsCred(1))
 
   def main(args: Array[String]): Unit = {
-    processData();
+    getHeroId().foreach(println)
+    // processData();
+    heroDataSource.close()
     spark.stop()
+  }
+
+  def getHeroId(): List[Int] = {
+    case class Hero(
+      localized_name: String,
+      url_full_portrait: String,
+      name: String,
+      url_small_portrait: String,
+      url_large_portrait: String,
+      url_vertical_portrait: String,
+      id: Int
+    )
+
+    implicit val heroReads: Reads[Hero] = (
+      (JsPath \ "localized_name").read[String] and
+      (JsPath \ "url_full_portrait").read[String] and
+      (JsPath \ "name").read[String] and
+      (JsPath \ "url_small_portrait").read[String] and
+      (JsPath \ "url_large_portrait").read[String] and
+      (JsPath \ "url_vertical_portrait").read[String] and
+      (JsPath \ "id").read[Int]
+    )(Hero.apply _)
+
+    val json = Json.parse(heroDataSource.getLines.mkString);
+    val heroes = json("heroes").as[List[Hero]]
+
+    heroes.map(_.id).sorted
   }
 
   def processData() {
