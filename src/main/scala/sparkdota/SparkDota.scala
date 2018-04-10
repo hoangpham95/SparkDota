@@ -16,31 +16,20 @@ import play.api.libs.json._
 import play.api.libs.functional.syntax._
 
 case class Player(
-    account_id: Long,
     hero_id: Long,
-    player_slot: Long,
-    kills: Long,
-    deaths: Long,
-    assists: Long,
-    leaver_status: Boolean,
-    last_hits: Long,
-    gold_per_min: Long,
-    xp_per_min: Long,
-    hero_damage: Long,
-    tower_damange: Long
+    radiant: Boolean
 )
 
 case class Match(
-    game_mode: Long,
     match_id: Long,
-    match_seq_num: Long,
-    duration: Long,
     radiant_win: Boolean,
-    players: Seq[Player]
+    radiant: Seq[Long],
+    dire: Seq[Long]
 )
 
 object SparkDota {
-  val dataPath = "s3a://emrfs-dota-data/yasp-dump.json"
+  // val dataPath = "s3a://emrfs-dota-data/yasp-dump.json"
+  val dataPath = "/home/hpham/Desktop/dota.json"
 
   val spark: SparkSession =
     SparkSession
@@ -54,17 +43,17 @@ object SparkDota {
   
   val sc: SparkContext = spark.sparkContext
   val hc = sc.hadoopConfiguration
-  val awsCred = getAWSCred()
+  // val awsCred = getAWSCred()
   val heroPath = "src/main/resources/sparkdota/hero.json"
   val heroDataSource = Source.fromFile(heroPath);
 
-  hc.set("fs.s3a.impl", "org.apache.hadoop.fs.s3native.NativeS3FileSystem")
-  hc.set("fs.s3a.awsAccessKeyId", awsCred(0))
-  hc.set("fs.s3a.awsSecretAccessKey", awsCred(1))
+  // hc.set("fs.s3a.impl", "org.apache.hadoop.fs.s3native.NativeS3FileSystem")
+  // hc.set("fs.s3a.awsAccessKeyId", awsCred(0))
+  // hc.set("fs.s3a.awsSecretAccessKey", awsCred(1))
 
   def main(args: Array[String]): Unit = {
-    getHeroId().foreach(println)
-    // processData();
+    // getHeroId().foreach(println)
+    processData();
     heroDataSource.close()
     spark.stop()
   }
@@ -97,92 +86,49 @@ object SparkDota {
   }
 
   def processData() {
-    val rawDataRDD = sc
-      .textFile(dataPath)
-      .take(5)
-
-    val data = sc.parallelize(rawDataRDD)
-
-    val df = spark.sqlContext.read.json(data)
+    val df = spark
+      .read
+      .option("multiline", true)
+      .option("mode", "PERMISSIVE")
+      .json(dataPath)
 
     val firstRound = df
       .select(
-        $"game_mode",
         $"match_id",
-        $"match_seq_num",
-        $"duration",
         $"radiant_win",
         // parsing players data
-        $"players.account_id".as("account_id"),
         $"players.hero_id".as("hero_id"),
-        $"players.player_slot".as("player_slot"),
-        $"players.kills".as("kills"),
-        $"players.deaths".as("deaths"),
-        $"players.assists".as("assists"),
-        $"players.leaver_status".as("leaver_status"),
-        $"players.last_hits".as("last_hits"),
-        $"players.gold_per_min".as("gold_per_min"),
-        $"players.xp_per_min".as("xp_per_min"),
-        $"players.hero_damage".as("hero_damage"),
-        $"players.tower_damage".as("tower_damage")
+        $"players.player_slot".as("player_slot")
       )
       .where($"human_players" === 10)
       .where($"game_mode".isin("1", "2", "22"))
-      .where(!array_contains($"leaver_status", 1))
-      .map((r: Row) => Match(
-        r.getAs[Long](0),
-        r.getAs[Long](1),
-        r.getAs[Long](2),
-        r.getAs[Long](3),
-        r.getAs[Boolean](4),
-        convertToPlayerList(
-          r.getAs[Seq[Long]](5),
-          r.getAs[Seq[Long]](6),
-          r.getAs[Seq[Long]](7),
-          r.getAs[Seq[Long]](8),
-          r.getAs[Seq[Long]](9),
-          r.getAs[Seq[Long]](10),
-          r.getAs[Seq[Long]](11),
-          r.getAs[Seq[Long]](12),
-          r.getAs[Seq[Long]](13),
-          r.getAs[Seq[Long]](14),
-          r.getAs[Seq[Long]](15),
-          r.getAs[Seq[Long]](16)
-        )
-      ))
+      .where(!array_contains($"players.leaver_status", 1))
+      .map((r: Row) => {
+          val playerList = convertToPlayerList(r.getAs[Seq[Long]](2), r.getAs[Seq[Long]](3)).sortBy(_.hero_id)
+          Match(
+            r.getAs[Long](0),
+            r.getAs[Boolean](1),
+            playerList.filter(_.radiant).map(_.hero_id),
+            playerList.filter(!_.radiant).map(_.hero_id)
+          )
+        }
+      )
+    val time = System.currentTimeMillis().toString()
+    val stringify = udf((vs: Seq[Long]) => vs.mkString(","))
 
-    firstRound.printSchema()
-    firstRound.show();
+    firstRound.withColumn("radiant", stringify($"radiant"))
+      .withColumn("dire", stringify($"dire"))
+      .write.format("csv").save("s3a://emrfs-dota-data/sample-output-" + time)
   }
 
   def convertToPlayerList(
-    accountIds: Seq[Long],
     heroIds: Seq[Long],
-    playerSlots: Seq[Long],
-    kills: Seq[Long],
-    deaths: Seq[Long],
-    assists: Seq[Long],
-    leaverStats: Seq[Long],
-    lastHits: Seq[Long],
-    gpm: Seq[Long],
-    xpm: Seq[Long],
-    dmgs: Seq[Long],
-    towerDmg: Seq[Long]
+    playerSlots: Seq[Long]
   ): Seq[Player] = {
     for {i <- 0 to 9}
       yield Player(
-        accountIds(i), 
         heroIds(i), 
-        playerSlots(i), 
-        kills(i), 
-        deaths(i),
-        assists(i),
-        leaverStats(i) == 1,
-        lastHits(i),
-        gpm(i),
-        xpm(i),
-        dmgs(i),
-        towerDmg(i)
+        playerSlots(i) / 128 == 0
       )
   }
 
