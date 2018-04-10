@@ -28,14 +28,13 @@ case class Match(
 )
 
 object SparkDota {
-  // val dataPath = "s3a://emrfs-dota-data/yasp-dump.json"
-  val dataPath = "/home/hpham/Desktop/dota.json"
+  val dataPath = "s3://emrfs-dota-data/yasp-dump.json"
+  // val dataPath = "/home/hoang/Downloads/dota.json"
 
   val spark: SparkSession =
     SparkSession
       .builder()
       .appName("Spark Dota")
-      .config("spark.master", "local")
       .getOrCreate()
 
 // implicit conversions
@@ -44,17 +43,13 @@ object SparkDota {
   val sc: SparkContext = spark.sparkContext
   val hc = sc.hadoopConfiguration
   // val awsCred = getAWSCred()
-  val heroPath = "src/main/resources/sparkdota/hero.json"
-  val heroDataSource = Source.fromFile(heroPath);
-
-  // hc.set("fs.s3a.impl", "org.apache.hadoop.fs.s3native.NativeS3FileSystem")
-  // hc.set("fs.s3a.awsAccessKeyId", awsCred(0))
-  // hc.set("fs.s3a.awsSecretAccessKey", awsCred(1))
+  val stream = getClass.getResourceAsStream("/hero.json")
+  val heroDataSource = Source.fromInputStream(stream);
 
   def main(args: Array[String]): Unit = {
     // getHeroId().foreach(println)
     processData();
-    heroDataSource.close()
+    // heroDataSource.close()
     spark.stop()
   }
 
@@ -88,8 +83,8 @@ object SparkDota {
   def processData() {
     val df = spark
       .read
-      .option("multiline", true)
       .option("mode", "PERMISSIVE")
+      .option("multiline", true)
       .json(dataPath)
 
     val firstRound = df
@@ -115,10 +110,11 @@ object SparkDota {
       )
     val time = System.currentTimeMillis().toString()
     val stringify = udf((vs: Seq[Long]) => vs.mkString(","))
-
+    // val filePath = "/home/hoang/Desktop/spark-output-"
+    val filePath = "s3://emrfs-dota-data/spark-output-"
     firstRound.withColumn("radiant", stringify($"radiant"))
       .withColumn("dire", stringify($"dire"))
-      .write.format("csv").save("s3a://emrfs-dota-data/sample-output-" + time)
+      .write.format("csv").save(filePath + time)
   }
 
   def convertToPlayerList(
