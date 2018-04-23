@@ -28,8 +28,8 @@ case class Match(
 )
 
 object SparkDota {
-  val dataPath = "s3://emrfs-dota-data/yasp-dump.json"
-  // val dataPath = "/home/hoang/Downloads/dota.json"
+  // val dataPath = "s3://emrfs-dota-data/yasp-dump.json"
+  val dataPath = "/home/hoang/Downloads/dota.json"
 
   val spark: SparkSession =
     SparkSession
@@ -50,8 +50,10 @@ object SparkDota {
   def main(args: Array[String]): Unit = {
     // getHeroId().foreach(println)
     // processData();
-    processMatchData("/home/hpham/match_data.csv")
-    processLosingAgainst("/home/hpham/match_data.csv")
+    processWinningMatchData("/home/hpham/match_data.csv")
+    processWinLoseAgainst("/home/hpham/match_data.csv")
+    processWinRate("/home/hpham/match_data.csv")
+
     // heroDataSource.close()
     spark.stop()
   }
@@ -93,18 +95,24 @@ object SparkDota {
       // .option("samplingOption", 0.05)
       .json(dataPath)
 
-    val firstRound = df
-      .select(
+    val firstRound = 
+    df.select(
         $"radiant_win",
+        $"skill",
         // parsing players data
         $"players.hero_id".as("hero_id"),
         $"players.player_slot".as("player_slot")
       )
+      .where($"skill".isin("2", "3"))
       .where($"human_players" === 10)
       .where($"game_mode".isin("1", "2", "22"))
       .where(!array_contains($"players.leaver_status", 1))
       .map((r: Row) => {
-          val playerList = convertToPlayerList(r.getAs[Seq[Long]](1), r.getAs[Seq[Long]](2)).sortBy(_.hero_id)
+          val playerList = convertToPlayerList(
+            r.getAs[Seq[Long]](1), 
+            r.getAs[Seq[Long]](2)
+          ).sortBy(_.hero_id)
+          
           Match(
             r.getAs[Boolean](0),
             playerList.filter(_.radiant).map(_.hero_id),
@@ -114,7 +122,6 @@ object SparkDota {
       )
     val time = System.currentTimeMillis().toString()
     val stringify = udf((vs: Seq[Long]) => vs.mkString(","))
-    // val filePath = "/home/hoang/Desktop/spark-output-"
     val filePath = "s3://emrfs-dota-data/spark-output-"
     firstRound.withColumn("radiant", stringify($"radiant"))
       .withColumn("dire", stringify($"dire"))
@@ -153,16 +160,19 @@ object SparkDota {
     seq.toList
   }
 
-  def processMatchData(datapath: String = "s3://emrfs-dota-data/match_data.csv") = {
-    val df = spark.read.format("csv")
-      .option("header", true)
-      .load(datapath)
-      .select($"radiant_win", $"radiant", $"dire")
-      .map((r: Row) => Match(r.getAs[String](0) == "True", r.getAs[String](1).split(",").map(_.toLong), r.getAs[String](2).split(",").map(_.toLong)))
+  def getMatchDf(d: String) = {
+    spark.read.format("csv")
+    .option("header", true)
+    .load(d)
+    .select($"radiant_win", $"radiant", $"dire")
+    .map((r: Row) => Match(r.getAs[String](0) == "True", r.getAs[String](1).split(",").map(_.toLong), r.getAs[String](2).split(",").map(_.toLong)))
+  }
 
+  def processWinningMatchData(datapath: String = "s3://emrfs-dota-data/match_data.csv") = {
+    val df = getMatchDf(datapath)
     val matchRDD: RDD[Match] = df.rdd
 
-    val winCouples = matchRDD.flatMap(r => {
+    matchRDD.flatMap(r => {
       val w = if (r.radiant_win) r.radiant else r.dire
       val l = if (r.radiant_win) r.dire else r.radiant
 
@@ -175,23 +185,18 @@ object SparkDota {
       win ::: lose
     })
     .map(r => ((r._1, r._2), (if (r._3) 1 else 0, if (r._3) 0 else 1))) // RDD[((Int, Int), (Int, Int))]
-    .reduceByKey((acc, m2) => (acc._1 + m2._1, acc._2 + m2._2))
-    .mapValues(rec => (rec._1.toFloat / (rec._1 + rec._2)))
-    .map(heRec => (heRec._1._1, heRec._1._2, heRec._2))
-    .toDF.write.csv("/home/hpham/win.csv")
+    .reduceByKey((acc: (Int, Int), m2: (Int, Int)) => (acc._1 + m2._1, acc._2 + m2._2))
+    .map(v => (v._1._1, v._1._2, v._2._1))
+    .toDF
+    .coalesce(1).write.csv("/home/hpham/winTogether")
   }
 
-  def processLosingAgainst(datapath: String = "s3://emrfs-dota-data/match_data.csv") = {
-    val df = spark.read.format("csv")
-      .option("header", true)
-      .load(datapath)
-      .select($"radiant_win", $"radiant", $"dire")
-      .map((r: Row) => Match(r.getAs[String](0) == "True", r.getAs[String](1).split(",").map(_.toLong), r.getAs[String](2).split(",").map(_.toLong)))
+  def processWinLoseAgainst(datapath: String = "s3://emrfs-dota-data/match_data.csv") = {
+    val df = getMatchDf(datapath)
 
-    
     val matchRDD: RDD[Match] = df.rdd
 
-    val losingRate = matchRDD.flatMap(m => {
+    matchRDD.flatMap(m => {
       val w = if (m.radiant_win) m.radiant else m.dire
       val l = if (m.radiant_win) m.dire else m.radiant
 
@@ -199,13 +204,35 @@ object SparkDota {
         i <- 0 to w.length - 1
         j <- 0 to l.length - 1
       }
-        yield List((w(i), l(j), true), (l(j), w(i), false))
+        yield List((w(i).toInt, l(j).toInt, true), (l(j).toInt, w(i).toInt, false))
     })
     .flatMap(x => x)
     .map(r => ((r._1, r._2), (if (r._3) 1 else 0, if (r._3) 0 else 1)))
-    .reduceByKey((acc, m2) => (acc._1 + m2._1, acc._2 + m2._2))
-    .mapValues(rec => ((rec._1.toFloat/(rec._1 + rec._2)), ((rec._2.toFloat/(rec._1 + rec._2)))))
-    .map(r => (r._1._1, r._1._2, r._2._1, r._2._2))
-    .toDF.write.csv("/home/hpham/lose.csv")
+    .reduceByKey((acc: (Int, Int), m2: (Int, Int)) => (acc._1 + m2._1, acc._2 + m2._2))
+    .mapValues(v => (v._1.toFloat / (v._1 + v._2)))
+    .map(v => (v._1._1, v._1._2, v._2._1))
+    .toDF
+    .coalesce(1).write.csv("/home/hpham/winAgainst")
+  }
+
+  def processWinRate(datapath: String = "s3://emrfs-dota-data/match_data.csv") = {
+    val df = getMatchDf(datapath)
+
+    val matchRDD: RDD[Match] = df.rdd
+
+    matchRDD.flatMap(m => {
+      val w = if (m.radiant_win) m.radiant else m.dire
+      val l = if (m.radiant_win) m.dire else m.radiant
+
+      val win = w.map(h => (h, (1, 0))).toList
+      val lose = l.map(h => (h, (0, 1))).toList
+
+      win ::: lose
+    })
+    .reduceByKey((acc, m) => (acc._1 + m._1, acc._2 + m._2))
+    .mapValues(v => (v._1.toFloat / (v._1 + v._2)))
+    .toDF
+    .coalesce(1)
+    .write.csv("/home/hpham/win_rate")
   }
 }
